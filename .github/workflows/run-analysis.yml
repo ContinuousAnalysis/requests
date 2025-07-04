@@ -1,0 +1,20 @@
+name: Trigger PyMOP Auto Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit SHA to test'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  call-pymop-auto-runner:
+    uses: ContinuousAnalysis/auto-pymop/.github/workflows/auto-runner.yml@main
+    with:
+      project: ${{ github.repository }}
+      commit: ${{ inputs.commit || github.sha }}
