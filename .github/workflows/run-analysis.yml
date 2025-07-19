@@ -1,0 +1,30 @@
+name: Trigger Continuous Analysis Sequentially
+
+on:
+  workflow_dispatch:
+    inputs:
+      commits:
+        description: 'JSON Array of commit SHAs to test (e.g., ["commit1","commit2"])'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+
+jobs:
+  analyze-commits-sequentially:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        commit: ${{ fromJson(inputs.commits) }}
+
+    steps:
+      - name: Call Continuous Analysis Auto Runner for ${{ matrix.commit }}
+        uses: ContinuousAnalysis/continuous-analysis/.github/workflows/auto-runner.yml@main
+        with:
+          project: ${{ github.repository }}
+          commit: ${{ matrix.commit }}
+          org_wide_token: ${{ secrets.ORG_WIDE_TOKEN }}
