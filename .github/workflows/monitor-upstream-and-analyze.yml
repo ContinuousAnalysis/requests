@@ -14,7 +14,6 @@ permissions:
   actions: write
   contents: write
   issues: write
-  workflows: write
 
 jobs:
   monitor-upstream:
