@@ -30,31 +30,46 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           path: forked-repo
+          fetch-depth: 0
 
       - name: Sync fork with upstream
+        continue-on-error: true
         run: |
-          # Change to the forked repo directory
+          set -euo pipefail
           cd forked-repo
 
-          # Set the user name and email for the git commands
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          # Add the upstream repo as a remote and fetch it
-          git remote add upstream https://github.com/${UPSTREAM_REPO}.git || true
-          git fetch upstream
-
-          # Checkout the branch and merge the upstream branch
-          git checkout ${{ env.BRANCH }}
-
-          # Try to rebase the branch
-          git rebase upstream/${{ env.BRANCH }} || {
-            echo "Rebase failed, trying to merge with --allow-unrelated-histories"
-            git merge upstream/${{ env.BRANCH }} --allow-unrelated-histories
-          }
-
-          # Push the merged changes back to the forked repo
-          git push --force-with-lease origin ${{ env.BRANCH }}
+          # Config the actor name and email
+          git config --global --add safe.directory "$PWD"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      
+          # Ensure refs are up-to-date
+          git fetch --prune origin
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" || true
+          git fetch --prune upstream
+      
+          # Local branch is guaranteed to exist
+          git checkout "${BRANCH}"
+      
+          # Merge upstream; if it conflicts, try preferring upstream changes
+          if ! git merge --no-edit "upstream/${BRANCH}"; then
+            echo "Plain merge conflicted; retrying with -X theirs (prefer upstream)."
+            git merge --no-edit -X theirs "upstream/${BRANCH}" || true
+          fi
+      
+          # Fail if conflicts remain
+          if git ls-files -u | grep -q '^'; then
+            echo "Merge conflicts detected. Resolve them or adjust strategy."
+            exit 1
+          fi
+      
+          # Push only when there are changes
+          if ! git diff --quiet "origin/${BRANCH}..HEAD"; then
+            git push origin "${BRANCH}"
+            echo "Pushed updates to origin/${BRANCH}."
+          else
+            echo "No changes to push."
+          fi
 
           # Change back to the root directory
           cd ..
