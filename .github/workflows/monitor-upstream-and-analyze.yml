@@ -347,9 +347,9 @@ jobs:
 
             # Generate artifact name to detect completion
             if [[ -n "${{ inputs.start_commit }}" ]]; then
-              artifact_name="violation-filter-history-results-${dispatch_id}-${repo_name}-${current_commit}-filtered"
+              artifact_name="continuous-analysis-history-results-${dispatch_id}-${repo_name}-${commit}-filtered"
             else
-              artifact_name="violation-filter-results-${repo_name}-${current_commit}-filtered"
+              artifact_name="continuous-analysis-results-${repo_name}-${current_commit}-filtered"
             fi
 
             # Trigger the violation filter workflow
