@@ -347,7 +347,7 @@ jobs:
             gh workflow run run-filter.yml \
               --repo "${GITHUB_REPOSITORY}" \
               --ref "${{ env.BRANCH }}" \
-              --field commit="$current_commit" \
+              --field current_commit="$current_commit" \
               --field previous_commit="$previous_commit" \
               --field dispatch_id="$dispatch_id"
 
@@ -379,7 +379,6 @@ jobs:
           done
           
           echo "All ${#commits[@]} violation filter workflows completed successfully!"
-
 
       - name: Update SHA cache
         if: steps.check-commits.outputs.has_new_commits == 'true' && inputs.start_commit == ''
