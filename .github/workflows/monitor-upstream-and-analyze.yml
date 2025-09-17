@@ -347,7 +347,7 @@ jobs:
 
             # Generate artifact name to detect completion
             if [[ -n "${{ inputs.start_commit }}" ]]; then
-              artifact_name="continuous-analysis-history-results-${dispatch_id}-${repo_name}-${commit}-filtered"
+              artifact_name="continuous-analysis-history-results-${dispatch_id}-${repo_name}-${current_commit}-filtered"
             else
               artifact_name="continuous-analysis-results-${repo_name}-${current_commit}-filtered"
             fi
