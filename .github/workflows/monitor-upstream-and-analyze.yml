@@ -22,7 +22,8 @@ jobs:
       # NEED TO BE CONFIGURED EACH PROJECT
       UPSTREAM_REPO: "psf/requests"
       BRANCH: "main"
-      DISPATCH_TIMEOUT: 1800 # 30 minutes
+      DISPATCH_TIMEOUT: 3600 # 1 hour
+      MAX_CONCURRENT: 20
 
     steps:
       - name: Checkout the forked repo
@@ -155,7 +156,7 @@ jobs:
             fi
           fi
 
-      - name: Trigger analysis workflows for new commits sequentially
+      - name: Trigger analysis workflows for new commits in parallel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -176,59 +177,128 @@ jobs:
           # Extract repository name for future usages
           repo_name=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
 
-          # Trigger analysis workflows for new commits sequentially
-          for commit in $(tac new_commits.txt); do
-            echo "Dispatching workflow for commit: $commit"
+          # Configuration
+          MAX_CONCURRENT=${{ env.MAX_CONCURRENT }}
+          total_commits=${#commits[@]}
+          echo "Processing ${total_commits} commits in batches of ${MAX_CONCURRENT}..."
 
-            # Generate a target artifact name to look to detect if the workflow has completed
-            if [[ -n "${{ inputs.start_commit }}" ]]; then
-              artifact_name="continuous-analysis-history-results-${dispatch_id}-${repo_name}-${commit}"
-            else
-              artifact_name="continuous-analysis-results-${repo_name}-${commit}"
+          # Process commits in batches
+          for ((batch_start=0; batch_start<total_commits; batch_start+=MAX_CONCURRENT)); do
+            batch_end=$((batch_start + MAX_CONCURRENT))
+            if [ $batch_end -gt $total_commits ]; then
+              batch_end=$total_commits
             fi
+            
+            batch_size=$((batch_end - batch_start))
+            batch_num=$((batch_start / MAX_CONCURRENT + 1))
+            echo "Processing batch ${batch_num}: commits ${batch_start}-$((batch_end-1)) (${batch_size} workflows)"
 
-            # Trigger the analysis workflow
-            gh workflow run run-analysis.yml \
-              --repo "${GITHUB_REPOSITORY}" \
-              --ref "${{ env.BRANCH }}" \
-              --field commit="$commit" \
-              --field dispatch_id="$dispatch_id"
+            # Create arrays to track dispatched workflows and their artifacts for this batch
+            declare -a dispatched_commits=()
+            declare -a artifact_names=()
 
-            # Create a variable to indicate if the artifact is created
-            echo "Waiting for artifact ${artifact_name} to be created..."
-            artifact_created=false
+            # Dispatch workflows for this batch
+            for ((i=batch_start; i<batch_end; i++)); do
+              commit="${commits[$i]}"
+              echo "Dispatching workflow for commit: $commit"
 
+              # Generate a target artifact name to look to detect if the workflow has completed
+              if [[ -n "${{ inputs.start_commit }}" ]]; then
+                artifact_name="continuous-analysis-history-results-${dispatch_id}-${repo_name}-${commit}"
+              else
+                artifact_name="continuous-analysis-results-${repo_name}-${commit}"
+              fi
+
+              # Trigger the analysis workflow
+              gh workflow run run-analysis.yml \
+                --repo "${GITHUB_REPOSITORY}" \
+                --ref "${{ env.BRANCH }}" \
+                --field commit="$commit" \
+                --field dispatch_id="$dispatch_id"
+
+              # Track this commit and its expected artifact
+              dispatched_commits+=("$commit")
+              artifact_names+=("$artifact_name")
+            done
+
+            # Wait for all workflows in this batch to complete
+            echo "Waiting for batch ${batch_num} (${#dispatched_commits[@]} workflows) to complete..."
+            set -e  # Exit on any error
+            
             # Set the end time for the timeout
             end_time=$(( $(date +%s) + DISPATCH_TIMEOUT ))
             
-            # Continue to check and wait for the target artifact to be created until the end time is reached
-            while [ "$(date +%s)" -lt "$end_time" ]; do
-              if curl -s -H "Authorization: token $GH_TOKEN" \
+            # Track completed workflows
+            declare -a completed_commits=()
+            
+            # Continue checking until all workflows in this batch complete or timeout
+            while [ ${#completed_commits[@]} -lt ${#dispatched_commits[@]} ] && [ "$(date +%s)" -lt "$end_time" ]; do
+              # Get current artifacts
+              current_artifacts=$(curl -s -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-                | jq -r '.artifacts[].name' 2>/dev/null | grep -q "^${artifact_name}"; then
-                artifact_created=true
-                echo "Artifact ${artifact_name} found."
-                break
+                | jq -r '.artifacts[].name' 2>/dev/null || echo "")
+              
+              # Check each dispatched workflow in this batch
+              for i in "${!dispatched_commits[@]}"; do
+                commit="${dispatched_commits[$i]}"
+                artifact_name="${artifact_names[$i]}"
+                
+                # Skip if already completed
+                if [[ " ${completed_commits[@]} " =~ " ${commit} " ]]; then
+                  continue
+                fi
+                
+                # Check if artifact exists
+                if echo "$current_artifacts" | grep -q "^${artifact_name}"; then
+                  echo "Artifact ${artifact_name} found for commit ${commit}."
+                  completed_commits+=("$commit")
+                fi
+              done
+              
+              # Report progress for this batch
+              completed_count=${#completed_commits[@]}
+              total_count=${#dispatched_commits[@]}
+              echo "Batch ${batch_num} progress: ${completed_count}/${total_count} workflows completed"
+              
+              # If not all complete, wait before next check
+              if [ ${#completed_commits[@]} -lt ${#dispatched_commits[@]} ]; then
+                echo "Waiting 30 seconds before next check..."
+                sleep 60
               fi
-              echo "Artifact not found yet, waiting 30 seconds..."
-              sleep 30 # 30 seconds between checks
             done
 
-            # Check if the workflow is timed out before dispatching the next workflow
-            if [ "$artifact_created" = false ]; then
-              echo "ERROR: Timed out waiting for artifact ${artifact_name} for ${commit}" >&2
+            # Check if all workflows in this batch completed successfully
+            if [ ${#completed_commits[@]} -lt ${#dispatched_commits[@]} ]; then
+              echo "ERROR: Timed out waiting for batch ${batch_num} workflows to complete" >&2
+              echo "Completed: ${#completed_commits[@]}/${#dispatched_commits[@]}" >&2
+              echo "Missing artifacts:" >&2
+              for i in "${!dispatched_commits[@]}"; do
+                commit="${dispatched_commits[$i]}"
+                if [[ ! " ${completed_commits[@]} " =~ " ${commit} " ]]; then
+                  echo "  - ${artifact_names[$i]} (commit: ${commit})" >&2
+                fi
+              done
               exit 1
             fi
+            
+            echo "Batch ${batch_num} completed successfully! (${#dispatched_commits[@]} workflows)"
+            
+            # Clear arrays for next batch
+            unset dispatched_commits
+            unset artifact_names
+            unset completed_commits
           done
+          
+          echo "All ${total_commits} workflows completed successfully across all batches!"
 
       - name: Update SHA cache
-        if: steps.check-commits.outputs.has_new_commits == 'true'
+        if: steps.check-commits.outputs.has_new_commits == 'true' && inputs.start_commit == ''
         run: |
           NEWEST=$(head -n 1 new_commits.txt)
           echo "$NEWEST" > .continuous-analysis-cache/last_sha.txt
 
       - name: Generate timestamp
-        if: steps.check-commits.outputs.has_new_commits == 'true'
+        if: steps.check-commits.outputs.has_new_commits == 'true' && inputs.start_commit == ''
         id: timestamp
         run: |
           ts=$(date +'%Y%m%d-%H%M')
@@ -236,7 +306,7 @@ jobs:
           echo "Generated timestamp: $ts"
 
       - name: Save updated SHA cache with timestamp
-        if: steps.check-commits.outputs.has_new_commits == 'true'
+        if: steps.check-commits.outputs.has_new_commits == 'true' && inputs.start_commit == ''
         uses: actions/cache/save@v4
         with:
           path: .continuous-analysis-cache
