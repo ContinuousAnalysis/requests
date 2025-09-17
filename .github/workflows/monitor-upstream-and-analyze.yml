@@ -33,39 +33,34 @@ jobs:
           fetch-depth: 0
 
       - name: Sync fork with upstream
-        continue-on-error: true
         run: |
           set -euo pipefail
           cd forked-repo
+          echo "Syncing fork with upstream..."
       
-          # Make Git happy on hosted runners
+          # Configure Git user name and email properly
           git config --global --add safe.directory "$PWD"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      
+        
           # Ensure refs are current
           git fetch --prune origin
           git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" || true
           git fetch --prune upstream --tags
       
-          # Local branch is guaranteed to exist
+          # Check out the branch if it is not already checked out
           git checkout "${BRANCH}"
       
-          # Optional: stash (usually no changes in CI, but harmless)
-          git -c advice.skippedCherryPicks=false stash push -u -m "autostash" || true
-      
+          # Rebasing the branch onto the upstream branch
           echo "Rebasing ${BRANCH} onto upstream/${BRANCH}..."
           if ! git rebase -X theirs --rebase-merges "upstream/${BRANCH}"; then
             echo "Rebase failed; aborting."
             git rebase --abort || true
-            git stash pop || true
             exit 1
           fi
       
-          # Restore any stashed changes (likely none)
-          git stash pop || true
-      
-          # Push only if diverged; use --force-with-lease for safety
+          # Push only if diverged; use --force-with-lease for safety (we pushed the rebased branch to origin)
+          # This is to avoid conflicts when rebasing
           if ! git diff --quiet "origin/${BRANCH}..HEAD"; then
             git push --force-with-lease origin "${BRANCH}"
             echo "Pushed rebased ${BRANCH} to origin."
@@ -120,11 +115,11 @@ jobs:
         id: check-commits
         run: |
           # Print the upstream repo and branch to the console
-          echo "Finding the latest 50 commits from the upstream repo: $UPSTREAM_REPO@$BRANCH"
+          echo "Finding the latest 100 commits from the upstream repo: $UPSTREAM_REPO@$BRANCH"
 
-          # Get the latest 50 commits from the upstream repo and save them to a JSON file
+          # Get the latest 100 commits from the upstream repo and save them to a JSON file
           curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${UPSTREAM_REPO}/commits?sha=${BRANCH}&per_page=50" \
+              "https://api.github.com/repos/${UPSTREAM_REPO}/commits?sha=${BRANCH}&per_page=100" \
               > commits.json
 
           # Parse the first commit SHA from the JSON file for sanity check
