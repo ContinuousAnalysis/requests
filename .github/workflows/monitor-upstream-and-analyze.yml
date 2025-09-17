@@ -22,7 +22,8 @@ jobs:
       # NEED TO BE CONFIGURED EACH PROJECT
       UPSTREAM_REPO: "psf/requests"
       BRANCH: "main"
-      DISPATCH_TIMEOUT: 3600 # 1 hour
+      RUNNER_DISPATCH_TIMEOUT: 3600 # 1 hour
+      FILTER_DISPATCH_TIMEOUT: 600 # 10 minutes
       MAX_CONCURRENT: 20
 
     steps:
@@ -226,7 +227,7 @@ jobs:
             set -e  # Exit on any error
             
             # Set the end time for the timeout
-            end_time=$(( $(date +%s) + DISPATCH_TIMEOUT ))
+            end_time=$(( $(date +%s) + RUNNER_DISPATCH_TIMEOUT ))
             
             # Track completed workflows
             declare -a completed_commits=()
@@ -262,7 +263,7 @@ jobs:
               
               # If not all complete, wait before next check
               if [ ${#completed_commits[@]} -lt ${#dispatched_commits[@]} ]; then
-                echo "Waiting 30 seconds before next check..."
+                echo "Waiting 60 seconds before next check..."
                 sleep 60
               fi
             done
@@ -290,6 +291,95 @@ jobs:
           done
           
           echo "All ${total_commits} workflows completed successfully across all batches!"
+
+      - name: Trigger violation filter workflows for new commits in sequence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Read the commits from file
+          mapfile -t commits < new_commits.txt
+
+          # If no new commits to process, exit
+          if [ ${#commits[@]} -eq 0 ]; then
+            echo "No new commits to process"
+            exit 0
+          fi
+
+          # If start_commit is provided, generate a random dispatch ID for history analysis
+          if [[ -n "${{ inputs.start_commit }}" ]]; then
+            dispatch_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+          fi
+
+          # Extract repository name for future usages
+          repo_name=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+
+          # Process commits in sequence for violation filter
+          echo "Processing ${#commits[@]} commits for violation filter in sequence..."
+          
+          # Reverse the commits array to process from oldest to newest
+          reversed_commits=()
+          for ((i=${#commits[@]}-1; i>=0; i--)); do
+            reversed_commits+=("${commits[$i]}")
+          done
+
+          # Process each commit in sequence
+          for i in "${!reversed_commits[@]}"; do
+            current_commit="${reversed_commits[$i]}"
+            
+            # For the first commit (oldest), previous_commit is empty
+            # For subsequent commits, previous_commit is the previous one in the sequence
+            if [ $i -eq 0 ]; then
+              previous_commit=""
+              echo "Processing first commit: $current_commit (no previous commit)"
+            else
+              previous_commit="${reversed_commits[$i-1]}"
+              echo "Processing commit: $current_commit (previous: $previous_commit)"
+            fi
+
+            # Generate artifact name to detect completion
+            if [[ -n "${{ inputs.start_commit }}" ]]; then
+              artifact_name="violation-filter-history-results-${dispatch_id}-${repo_name}-${current_commit}-filtered"
+            else
+              artifact_name="violation-filter-results-${repo_name}-${current_commit}-filtered"
+            fi
+
+            # Trigger the violation filter workflow
+            gh workflow run run-filter.yml \
+              --repo "${GITHUB_REPOSITORY}" \
+              --ref "${{ env.BRANCH }}" \
+              --field commit="$current_commit" \
+              --field previous_commit="$previous_commit" \
+              --field dispatch_id="$dispatch_id"
+
+            # Wait for this workflow to complete
+            echo "Waiting for violation filter workflow to complete for commit: $current_commit"
+            artifact_created=false
+            
+            # Set the end time for the timeout
+            end_time=$(( $(date +%s) + FILTER_DISPATCH_TIMEOUT ))
+            
+            # Wait for the artifact to be created
+            while [ "$artifact_created" = false ] && [ "$(date +%s)" -lt "$end_time" ]; do
+              if curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+                | jq -r '.artifacts[].name' 2>/dev/null | grep -q "^${artifact_name}"; then
+                artifact_created=true
+                echo "Violation filter artifact ${artifact_name} found for commit ${current_commit}."
+                break
+              fi
+              echo "Violation filter artifact not found yet, waiting 30 seconds..."
+              sleep 30
+            done
+
+            # Check if the workflow completed successfully
+            if [ "$artifact_created" = false ]; then
+              echo "ERROR: Timed out waiting for violation filter artifact ${artifact_name} for commit ${current_commit}" >&2
+              exit 1
+            fi
+          done
+          
+          echo "All ${#commits[@]} violation filter workflows completed successfully!"
+
 
       - name: Update SHA cache
         if: steps.check-commits.outputs.has_new_commits == 'true' && inputs.start_commit == ''
