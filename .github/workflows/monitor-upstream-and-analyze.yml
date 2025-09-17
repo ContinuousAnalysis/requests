@@ -157,6 +157,19 @@ jobs:
             fi
           fi
 
+      - name: Generate dispatch ID
+        id: dispatch-id
+        run: |
+          # If start_commit is provided, generate a random dispatch ID for history analysis
+          if [[ -n "${{ inputs.start_commit }}" ]]; then
+            dispatch_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+            echo "dispatch_id=$dispatch_id" >> $GITHUB_OUTPUT
+            echo "Generated dispatch ID: $dispatch_id"
+          else
+            echo "dispatch_id=" >> $GITHUB_OUTPUT
+            echo "No dispatch ID needed for regular runs"
+          fi
+
       - name: Trigger analysis workflows for new commits in parallel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -170,10 +183,8 @@ jobs:
             exit 0
           fi
 
-          # If start_commit is provided, generate a random dispatch ID for history analysis
-          if [[ -n "${{ inputs.start_commit }}" ]]; then
-            dispatch_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-          fi
+          # Use the shared dispatch ID
+          dispatch_id="${{ steps.dispatch-id.outputs.dispatch_id }}"
 
           # Extract repository name for future usages
           repo_name=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
@@ -305,10 +316,8 @@ jobs:
             exit 0
           fi
 
-          # If start_commit is provided, generate a random dispatch ID for history analysis
-          if [[ -n "${{ inputs.start_commit }}" ]]; then
-            dispatch_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-          fi
+          # Use the same dispatch_id as the analysis workflows
+          dispatch_id="${{ steps.dispatch-id.outputs.dispatch_id }}"
 
           # Extract repository name for future usages
           repo_name=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
